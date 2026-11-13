@@ -1,5 +1,9 @@
 # f4b
 
+<div align="center">
+  <img src="media/logo.png" alt="Project Logo" width="500">
+</div>
+
 **Partition density functional theory (P-DFT) with a PySCF-like interface.**
 
 `f4b` splits a molecule into fragments, solves each fragment with Kohn-Sham DFT in the presence of a common
@@ -39,7 +43,7 @@ print(mf.e_tot, mf.Ep)
 10. [Accuracy and practical advice](#accuracy-and-practical-advice)
 11. [Limitations](#limitations)
 12. [Testing](#testing)
-13. [Citing, license, acknowledgements](#citing-license-acknowledgements)
+13. [Citing, funding, acknowledgements](#citing-funding-acknowledgements)
 
 ## Features
 
@@ -453,17 +457,21 @@ python -m pytest tests                    # adds the slow LiH test
 
 `scripts/validate_notebooks.py [inversion|functional|reference|lih]` reproduces the larger-basis runs of the table above.
 
-## Citing, license, acknowledgements
+## Citing, funding, acknowledgements
 
 ### Cites
 * 2020 Program Update: Q. Sun et al., "Recent developments in the PySCF program package," J. Chem. Phys. 153, 024109 (2020). DOI: 10.1063/5.0006074
 * Shi Y, Chávez VH, Wasserman A. n2v: A density-to-potential inversion suite. A sandbox for creating, testing, and benchmarking density functional theory inversion methods. WIREs Comput Mol Sci. 2022; 12:e1617. https://doi.org/10.1002/wcms.1617
 
-### License
-This project is licensed under the BSD 3-Clause License - see the [LICENSE](LICENSE) file for details.
+### Funding
+* This work was supported by the U.S. National Science Foundation (NSF) under Grant No. CHE-2306011. 
+* Calculations used Anvil at Purdue through allocation CHE240225 from the Advanced Cyberinfrastructure Coordination Ecosystem: Services & Support (ACCESS) program.
 
 ### Acknowledgements
 A special thanks to [Ralph Razzouk](https://ralphrazzouk.com/) for his guide when developing this package. 
+
+## License
+This project is licensed under the BSD 3-Clause License - see the [LICENSE](LICENSE) file for details.
 
 ## Copyright 
 Copyright (c) 2021, Wasserman Group  

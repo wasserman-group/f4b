@@ -474,4 +474,4 @@ A special thanks to [Ralph Razzouk](https://ralphrazzouk.com/) for his guide whe
 This project is licensed under the BSD 3-Clause License - see the [LICENSE](LICENSE) file for details.
 
 ## Copyright 
-Copyright (c) 2021, Wasserman Group  
+Copyright (c) 2026, Wasserman Group  

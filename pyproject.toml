@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "f4b"
+version = "0.1.0"
+description = "Partition-DFT (P-DFT) with a PySCF-like interface"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [ {name = "Ulises I. Zarate Lopez", email = "uzaratel@purdue.edu" }, 
+            {name = "Alvin E. Uppgard", email = "auppgard@purdue.edu"}]
+keywords = ["partition density functional theory", "P-DFT", "PySCF", "fragments", "Kohn-Sham inversion"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Chemistry",
+    "Topic :: Scientific/Engineering :: Physics",
+]
+# psi4 is required by n2v at import time but is only available through conda: install it first (see README).
+dependencies = [
+    "matplotlib",
+    "pytest",
+    "numpy",
+    "scipy",
+    "pyscf>=2.6",
+    "opt_einsum",
+    "ntov",                 # PyPI name of n2v (module `n2v`)
+    "pylibxc2",             # imported by n2v
+    "gbasis @ git+https://github.com/theochem/gbasis.git@2eb9e49775b6b0a35737825f640f7c33fd3bfa54",   # imported by n2v, not on PyPI
+]
+
+[project.optional-dependencies]
+test = ["pytest"]
+
+[tool.setuptools.packages.find]
+include = ["f4b*"]

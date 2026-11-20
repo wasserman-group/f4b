@@ -79,6 +79,8 @@ class FragmentSystem:
         self._S = None
         self.sym = None                 # FragSymmetry: solve only one fragment per orbit
         self._warned_sym = set()
+        self.guess_members = {}         # restart: {member key: (2, nao, nao)} starting densities of the fragment SCFs
+        self.guess_frags = {}           # restart: {fragment: (2, nao, nao)}, rescaled to each member's electron count
 
     def _get_mf(self, frag, m):
         key = (frag.index, m.na, m.nb, None if m.config is None else m.config.name)
@@ -97,8 +99,21 @@ class FragmentSystem:
             mf._dm_prev = None
             if m.config is not None:
                 self._set_multipliers(mf, m)
+            mf._dm_prev = self._starting_density(frag, m, mf._dm_prev)
             self._mf[key] = mf
         return self._mf[key]
+
+    def _starting_density(self, frag, m, default):
+        from .restart import member_key, scaled_guess
+        d = self.guess_members.get(member_key(frag.index, m.na, m.nb, None if m.config is None else m.config.name))
+        if d is not None:
+            return np.array(d)
+        d = self.guess_frags.get(frag.index)
+        if d is not None:
+            if self._S is None:
+                self._S = self.fmol.mol.intor("int1e_ovlp")
+            return scaled_guess(d, m.na, m.nb, self._S)
+        return default
 
     def _set_multipliers(self, mf, m):
         """Constrained SCF on the isolated fragment (Vp = 0) to get the fixed multipliers of a configuration."""

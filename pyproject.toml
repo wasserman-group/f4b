@@ -8,6 +8,7 @@ version = "0.1.0"
 description = "Partition-DFT (P-DFT) with a PySCF-like interface"
 readme = "README.md"
 requires-python = ">=3.8"
+license = {file = "LICENSE"}
 authors = [ {name = "Ulises I. Zarate Lopez", email = "uzaratel@purdue.edu" }, 
             {name = "Alvin E. Uppgard", email = "auppgard@purdue.edu"}]
 keywords = ["partition density functional theory", "P-DFT", "PySCF", "fragments", "Kohn-Sham inversion"]
@@ -34,3 +35,7 @@ test = ["pytest"]
 
 [tool.setuptools.packages.find]
 include = ["f4b*"]
+
+[project.urls]
+Homepage = "https://github.com/wasserman-group/f4b"
+Issues = "https://github.com/wasserman-group/f4b/issues"

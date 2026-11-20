@@ -6,13 +6,14 @@ The outer loop is a gradient-like update of the partition potential (AO matrix o
 
 where ``dVp`` is the method-dependent residual.  Fragment densities come from :mod:`f4b.fragment`.
 """
+import os
 import warnings
 
 import numpy as np
 from pyscf import dft
 from pyscf.dft import numint
 
-from . import fragment
+from . import fragment, restart as _restart
 from .functionals import Coulomb, Functional, GridData
 from .inversion import KSInverter
 from .utils import Timer, log
@@ -50,7 +51,9 @@ class PDFT:
     final_reg = "auto"          # same options as inv_reg, for the final inversion of n_f (accuracy of E_total)
     mu_shift = False
     accel = None                # None or 'diis': Pulay extrapolation of Vp from the gauge-free dVp residuals
-    Vp0 = None                  # initial guess of Vp (AO matrix, or (2,nao,nao) when spin-resolved)
+    Vp0 = None                  # initial guess of Vp: AO matrix, (2,nao,nao) when spin-resolved, or a file written by save()
+    dm0 = None                  # starting fragment densities (SCF guesses): file from save(), {fragment: dm} or list of dm
+    restart = None              # file written by save(): shorthand for Vp0 + dm0 + configuration weights of that run
     optimize_omega = None       # None -> True when the ensembles contain configuration groups
     omega_maxiter = 20
     diis_space = 8
@@ -301,6 +304,35 @@ class PDFT:
         if f1 > f0:                                   # keep the better of old/new
             self._omega_objective(x0, fr)
 
+    # ------------------------------------------------------------ restart
+    def save(self, path):
+        """Store the result (Vp, fragment densities, configuration weights) in ``path`` (``.npz``) to resume later with
+        ``restart=path`` or ``Vp0=path`` / ``dm0=path``.  Returns the file name."""
+        return _restart.save_state(self, path)
+
+    def _load_start(self):
+        """Resolve ``restart``, ``Vp0`` and ``dm0``; set the fragment SCF guesses; return the initial Vp (or None)."""
+        nao, nfrag = self.mol.nao, self.fmol.nfrag
+        st = _restart.as_state(self.restart) if self.restart is not None else None
+        if self.restart is not None and st is None:
+            raise ValueError("restart must be a file written by save() or the dict returned by load_state()")
+        Vp0 = self.Vp0 if self.Vp0 is not None else (None if st is None else st["Vp"])
+        if isinstance(Vp0, (str, os.PathLike, dict)):
+            s = _restart.as_state(Vp0)
+            if s is None:
+                raise ValueError("Vp0 must be an array, or a file written by save()")
+            Vp0 = s["Vp"]
+        dm0 = self.dm0 if self.dm0 is not None else st
+        if dm0 is not None:
+            self.frags._mf.clear()              # new SCF objects start from the given densities
+            self.frags.guess_members, self.frags.guess_frags = _restart.fragment_guess(dm0, nfrag, nao)
+        if st is not None and self._cfg_groups and len(st["omega"]):
+            om = np.asarray(st["omega"], float)
+            if om.size != len(self._omega_get()):
+                raise ValueError("restart: the stored configuration weights do not match this system's configuration ensembles")
+            self._omega_set(self._omega_normalize(om))
+        return Vp0
+
     # ------------------------------------------------------------ main loop
     def kernel(self):
         self.build()
@@ -311,8 +343,12 @@ class PDFT:
         else:
             self._spin_vp = bool(self.spin_vp)
         Vp = np.zeros((2, nao, nao)) if self._spin_vp else np.zeros_like(self.S)
-        if self.Vp0 is not None:
-            V0 = np.asarray(self.Vp0, float)
+        Vp0 = self._load_start()
+        if Vp0 is not None:
+            V0 = np.asarray(Vp0, float)
+            if V0.shape[-2:] != (nao, nao):
+                raise ValueError(f"Vp0 has shape {V0.shape}, expected ({nao}, {nao}) or (2, {nao}, {nao}); "
+                                 "was it computed with the same basis and atoms?")
             Vp = (np.array([V0, V0]) if V0.ndim == 2 else V0.copy()) if self._spin_vp else (V0 if V0.ndim == 2 else V0.mean(axis=0)).copy()
         Ef_prev = None
         best = None

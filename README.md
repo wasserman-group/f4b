@@ -39,11 +39,12 @@ print(mf.e_tot, mf.Ep)
 6. [Methods and the `pdft.RKS` object](#methods-and-the-pdftrks-object)
 7. [Options](#options)
 8. [Examples](#examples)
-9. [Plotting densities and the partition potential](#plotting-densities-and-the-partition-potential)
-10. [Accuracy and practical advice](#accuracy-and-practical-advice)
-11. [Limitations](#limitations)
-12. [Testing](#testing)
-13. [Citing, funding, acknowledgements](#citing-funding-acknowledgements)
+9. [Saving and resuming a calculation](#saving-and-resuming-a-calculation)
+10. [Plotting densities and the partition potential](#plotting-densities-and-the-partition-potential)
+11. [Accuracy and practical advice](#accuracy-and-practical-advice)
+12. [Limitations](#limitations)
+13. [Testing](#testing)
+14. [Citing, funding, acknowledgements](#citing-funding-acknowledgements)
 
 ## Features
 
@@ -55,6 +56,7 @@ print(mf.e_tot, mf.Ep)
   open-shell fragments) and **configuration** ensembles (constrained-DFT states with weights optimized during the run).
 * Fragment point-group symmetry (`frag_symm='auto'`): equivalent fragments are solved once.
 * Exact one-electron treatment (H2+) with no self-interaction error.
+* Save a result to disk and resume from it (also with a different method): `mf.save(...)`, `restart=`, `Vp0=`, `dm0=`.
 * Z-matrix geometries with dummy atoms, ghost atoms, user-defined evaluation grids, a reference-density input, and
   evaluation of `n_f` and `Vp` at arbitrary points.
 * Only LDA and GGA functionals (no hybrids, no meta-GGAs).
@@ -255,7 +257,9 @@ Set options as keywords: `pdft.RKS(mol, method=..., name=value)`. Unknown names 
 | `one_electron` | `None` | exact one-electron mode; automatic when the whole system has one electron |
 | `grid_level`, `fgrid_level` | 6, `None` | integration grid level (whole system; fragments, by default the same grid) |
 | `frag_symm`, `frag_symm_tol` | `'none'`, 1e-4 | `'auto'` solves one fragment per symmetry orbit (coordinates must be exact, tolerance in bohr) |
-| `Vp0` | `None` | initial `Vp` (AO matrix) |
+| `Vp0` | `None` | initial `Vp`: AO matrix, `(2, nao, nao)` if spin-resolved, or a file written by `mf.save` |
+| `dm0` | `None` | starting fragment densities (initial guesses of the fragment SCFs): file from `mf.save`, `{fragment: dm}` or a list of `dm` |
+| `restart` | `None` | file from `mf.save`: `Vp0` + `dm0` + configuration weights of that run |
 | `accel`, `diis_space`, `diis_start` | `None`, 8, 2 | `accel='diis'` enables Pulay extrapolation of `Vp` |
 | `optimize_omega`, `omega_maxiter` | auto, 20 | optimization of configuration weights |
 | `diverge_factor` | 20 | stop and keep the best iterate if the residual grows by this factor |
@@ -333,6 +337,61 @@ mf = pdft.RKS(mol, method='functional-T', frag_symm='auto')
 ```
 For H2O with fragments O, H, H only two fragment calculations are done and the two H densities are identical by
 construction.
+
+## Saving and resuming a calculation
+
+The loops often stop at `maxiter` with a result that is not good enough yet. Store it and continue later, in the same
+session or another one:
+
+```python
+mf = pdft.RKS(mol, method='reference', ref_dm=ref_dm, step=5.0, maxiter=100)
+mf.kernel()
+mf.save('h2_state')                     # writes h2_state.npz (the extension is added)
+
+# later: a new object, same molecule/basis/fragments, 100 more iterations starting from the stored state
+mf2 = pdft.RKS(mol, method='reference', ref_dm=ref_dm, step=5.0, maxiter=100, restart='h2_state.npz')
+mf2.kernel()
+```
+
+`mf.save` stores the partition potential `Vp` (of the best iterate, the one that `mf.Vp` returns), the density of every
+fragment-ensemble member, the ensemble-averaged fragment densities (`mf.make_rdm1(frag)`), the configuration weights
+`omega` and the final energies. The reference density is **not** stored; pass `ref_dm`/`nref` again. The first iteration
+of the resumed run reproduces the stored result (same L1 error for `reference`); the `maxiter` of the new run counts
+from zero, and `mf2.history` only contains the new iterations.
+
+The pieces can also be used independently, with **any** method (for example, start `inversion` from a `reference`
+result):
+
+| option | what it sets | accepted values |
+|---|---|---|
+| `Vp0` | initial partition potential | array `(nao, nao)` or `(2, nao, nao)`; file from `mf.save`; state loaded with `f4b.load_state` |
+| `dm0` | starting density of the fragment SCFs | file from `mf.save`; `{fragment: dm}`; list with one `dm` per fragment. A `dm` is `(2, nao, nao)` spin densities or a spin-summed `(nao, nao)` |
+| `restart` | everything above plus configuration weights | file from `mf.save` |
+
+An explicit `Vp0` or `dm0` overrides the corresponding part of `restart`. `f4b.load_state(path)` returns a dict with `Vp`,
+`frag_dm` (`(nfrag, 2, nao, nao)`), `members`, `omega` and `info` (energies, iterations, method) if you want to inspect or
+plot a stored result without recomputing it.
+
+```python
+import f4b
+st = f4b.load_state('h2_state.npz')
+st['info']['e_tot'], st['Vp'].shape, st['frag_dm'].shape
+mf3 = pdft.RKS(mol, method='inversion', Vp0='h2_state.npz', dm0='h2_state.npz')      # same as restart=
+mf4 = pdft.RKS(mol, method='functional-T', Vp0=my_array, dm0=[dm_frag0, dm_frag1])   # user-built arrays
+```
+
+Notes:
+
+* The densities of `dm0` are only **starting guesses** for the first SCF of each fragment (later iterations reuse the
+  previous density): given `Vp`, the fragment densities are determined by the SCF, so `dm0` mainly saves SCF cycles and
+  selects the SCF solution when there are several. The partition potential `Vp0` is what actually carries the progress
+  of a run.
+* Fractional-electron fragments are handled: a fragment density with a non-integer electron count (an ensemble average)
+  is rescaled to the electron numbers of each member before being used.
+* The new system must have the same atoms, basis and fragments (the arrays are matrices in the AO basis); a different
+  `nao` or fragment number raises a `ValueError`. Method, functional, `lam`, grid, ... may differ.
+* The DIIS history (`accel='diis'`) is not stored; it is rebuilt in the new run.
+* With `frag_symm='auto'` only the symmetry-unique fragments have stored members; the rest are generated by symmetry.
 
 ## Plotting densities and the partition potential
 
@@ -443,7 +502,7 @@ Notes on `Vp`:
   above KS after about 60 iterations unless `lam` is tuned or `accel='diis'` is used.
 * Configuration ensembles converge with `reference` (HF/6-31G: ~2 mEh from KS-PBE in ~80 iterations) but are
   experimental with `inversion`: the weight optimization is non-convex and may jump between configurations. A good start
-  is `Vp0=` from a `reference` run.
+  is `Vp0=` from a `reference` run (see [Saving and resuming](#saving-and-resuming-a-calculation)).
 * In the one-electron mode `inversion` and `reference` converge slowly; configuration ensembles are not supported.
 * Not implemented: local-Q non-additive terms, post-P-DFT corrections, the direct method, spin-resolved `reference`,
   fragment basis different from the system basis, `frag_symm` with configuration ensembles.

@@ -84,3 +84,77 @@ def test_zmatrix_dummy_atoms_not_in_fragments():
                 {0: [2], 1: [3], 2: [9]}):               # out of range
         with pytest.raises(ValueError):
             fgto.M(atom=ZMAT_H3P, fragments=bad, **kw)
+
+
+def _o2(**kw):
+    return fgto.M(atom="O 0 0 0; O 0 0 2.28", unit="bohr", basis="sto-3g", fragments={0: [0], 1: [1]}, **kw)
+
+
+def _spins(mol, k):
+    return [(m.na, m.nb) for m in mol.frags[k].members]
+
+
+def test_fspin_default_is_lowest_spin():
+    mol = _o2()
+    assert _spins(mol, 0) == [(4, 4)] and _spins(mol, 1) == [(4, 4)]
+    assert mol.frags[0].twoS0 is None
+
+
+def test_fspin_sets_the_fragment_spin():
+    mol = _o2(fspin={0: 2, 1: 2})
+    assert _spins(mol, 0) == [(5, 3)] and _spins(mol, 1) == [(5, 3)]
+    mol = _o2(fspin={1: 2})                                             # only fragment 1; fragment 0 keeps the default
+    assert _spins(mol, 0) == [(4, 4)] and _spins(mol, 1) == [(5, 3)]
+    assert _spins(_o2(fspin=[2, 0]), 0) == [(5, 3)]                      # one value per fragment, in order
+
+
+def test_fspin_with_fcharge():
+    mol = fgto.M(atom="O 0 0 0; O 0 0 2.28", unit="bohr", basis="sto-3g", fragments={0: [0], 1: [1]},
+                 fcharge={0: 1, 1: -1}, fspin={0: 3, 1: 1})            # O+ (7 e-, 2S=3) and O- (9 e-, 2S=1)
+    assert _spins(mol, 0) == [(5, 2)] and _spins(mol, 1) == [(5, 4)]
+
+
+def test_ensemble_spins_override_fspin_and_fspin_applies_to_the_neutral_member_only():
+    ens = {"charge": {0: {"charges": (0, -1), "weights": (0.5, 0.5), "spins": (0, 3)},
+                      1: {"charges": (0, -1), "weights": (0.5, 0.5)}}}
+    mol = fgto.M(atom="O 0 0 0; Mg 0 0 2.28", unit="bohr", basis="sto-3g", fragments={0: [0], 1: [1]},
+                 charge=-1, spin=1, ensembles=ens, fspin={0: 2, 1: 2})
+    assert _spins(mol, 0) == [(4, 4), (6, 3)]          # 'spins' beat fspin=2: O (8 e-, 2S=0) and O- (9 e-, 2S=3)
+    assert _spins(mol, 1) == [(7, 5), (7, 6)]          # Mg neutral member: fspin=2; Mg- (13 e-) has no 'spins': lowest spin
+
+
+def test_none_in_spins_means_default():
+    def li_h(spins_li, fspin):
+        ens = {"charge": {0: {"charges": (0, 1), "weights": (0.5, 0.5), "spins": spins_li},
+                          1: {"charges": (-1, 0), "weights": (0.5, 0.5)}}}
+        return fgto.M(atom="Li 0 0 0; H 0 0 3.0", unit="bohr", basis="sto-3g", fragments={0: [0], 1: [1]},
+                      ensembles=ens, fspin=fspin)
+    assert _spins(li_h((None, None), {0: 3}), 0) == [(3, 0), (1, 1)]      # neutral Li: fspin (quartet); Li+: default
+    assert _spins(li_h((1, None), {0: 3}), 0) == [(2, 1), (1, 1)]         # explicit 'spins' wins for that member
+    assert _spins(li_h((None, None), None), 0) == [(2, 1), (1, 1)]        # no fspin: lowest spin everywhere
+
+
+def test_fspin_errors():
+    with pytest.raises(ValueError, match="fragment 0.*incompatible"):
+        _o2(fspin={0: 1})                                                # 8 electrons cannot have 2S=1
+    with pytest.raises(ValueError, match="incompatible"):
+        _o2(fspin={0: 10})
+    with pytest.raises(ValueError, match="incompatible"):
+        _o2(fspin={0: -2})
+    with pytest.raises(ValueError, match="unknown fragment"):
+        _o2(fspin={3: 2})
+    with pytest.raises(ValueError, match="fragment 0, charge -1"):
+        _o2(ensembles={"charge": {0: {"charges": (0, -1), "weights": (0.5, 0.5), "spins": (2, 2)}}})
+
+
+def test_fspin_breaks_fragment_symmetry():
+    from f4b.symmetry import FragSymmetry
+    assert FragSymmetry(_o2(), tol=1e-4).nontrivial
+    assert not FragSymmetry(_o2(fspin={0: 2}), tol=1e-4).nontrivial
+    assert FragSymmetry(_o2(fspin={0: 2, 1: 2}), tol=1e-4).nontrivial
+
+
+def test_fspin_with_configuration_ensemble_needs_no_charge_ensemble():
+    states = tuple(((f"O 2p{k}", "beta", 0.0), ("O 2p" + {"x": "y", "y": "z", "z": "x"}[k], "beta", 0.0)) for k in "xyz")
+    mol = _o2(fspin={0: 2}, ensembles={"config": {0: {"charge": 0, "states": states}}})
+    assert _spins(mol, 0) == [(5, 3)] * 3

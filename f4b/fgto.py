@@ -7,6 +7,10 @@ Example::
                  fragments={0: [0], 1: [1]},                  # fragment index -> atom indices
                  ensembles={'spin': [0, 1]})                  # see f4b.ensemble for 'charge' / 'config'
 
+``fcharge={fragment: charge}`` and ``fspin={fragment: 2S}`` set the charge and the spin (2S = N_alpha - N_beta, as
+``spin`` in PySCF) of the fragments; the defaults are neutral and the lowest spin (singlet or doublet).  A charge ensemble can
+give the spin of each of its members (``'spins'``), which overrides ``fspin``.
+
 Atoms and fragments are numbered from 0, atoms in the order written in ``atom`` (rows of a Z-matrix included).
 Dummy centres (``X`` in a Z-matrix: no nucleus, no basis) and ghost atoms (``ghost-H``: basis functions, no nucleus)
 are not part of any fragment: list only the real atoms in ``fragments``::
@@ -41,9 +45,10 @@ def _is_ghost(sym):
 
 class FragMole:
     def __init__(self, atom=None, basis="cc-pvdz", charge=0, spin=0, unit="angstrom", fragments=None,
-                 ensembles=None, fcharge=None, fbasis="same", verbose=0, **mole_kwargs):
+                 ensembles=None, fcharge=None, fspin=None, fbasis="same", verbose=0, **mole_kwargs):
         self.atom, self.basis, self.charge, self.spin, self.unit = atom, basis, charge, spin, unit
         self.fragments, self.ensembles, self.fcharge, self.fbasis = fragments, ensembles, fcharge, fbasis
+        self.fspin = fspin
         self.verbose = verbose
         self.mole_kwargs = mole_kwargs
         self.mol = None
@@ -90,12 +95,21 @@ class FragMole:
         bad = set(fcharge) - set(fragments)
         if bad:
             raise ValueError(f"fcharge refers to unknown fragment(s) {sorted(bad)}")
+        fspin = self.fspin
+        if fspin is None:
+            fspin = {}
+        if not isinstance(fspin, dict):                        # also accept one 2S per fragment, in order
+            fspin = dict(enumerate(np.atleast_1d(fspin)))
+        bad = set(fspin) - set(fragments)
+        if bad:
+            raise ValueError(f"fspin refers to unknown fragment(s) {sorted(bad)}")
         Zs = mol.atom_charges()
         frags = []
         for i, idx in fragments.items():
             idx = tuple(row2atom[a] for a in idx)
             Z = float(sum(Zs[a] for a in idx))
-            frags.append(FragmentSpec(index=i, atoms=idx, Z=Z, nelec0=int(round(Z - fcharge.get(i, 0))), rows=fragments[i]))
+            frags.append(FragmentSpec(index=i, atoms=idx, Z=Z, nelec0=int(round(Z - fcharge.get(i, 0))), rows=fragments[i],
+                                      twoS0=None if fspin.get(i) is None else int(fspin[i])))
         self.frags = build_members(frags, self.ensembles, mol=self.mol)
         nel = sum(f.nelec_avg for f in self.frags)
         if abs(nel - mol.nelectron) > 1e-8:

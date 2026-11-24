@@ -16,8 +16,10 @@ Grammar for ``ensembles`` (a dict keyed by ensemble type; fragments and atoms ar
 The keys of ``'charge'``/``'config'`` and the items of ``'spin'`` are fragment indices.  ``charges`` are the charges of
 the members relative to the neutral fragment (``fcharge``): ``+1`` = one electron less (cation), ``-1`` = one electron
 more (anion), ``0`` = neutral; ``None`` = a member with no electrons at all (zero density, no calculation).  ``weights``
-are the total weight of each member and ``spins`` an optional 2S (multiplicity-1) per member
-(default ``N % 2``).  A ``'spin'`` entry symmetrises every open-shell member of the fragment with its spin-flipped
+are the total weight of each member and ``spins`` an optional 2S (= N_alpha - N_beta = multiplicity - 1) per member;
+a member without ``spins`` (or with ``None``) has the spin ``fspin`` of its fragment if it is the neutral member
+(charge 0 with respect to ``fcharge``), otherwise the lowest one (``N % 2``).  ``spins`` of an ensemble member overrides
+``fspin``.  A ``'spin'`` entry symmetrises every open-shell member of the fragment with its spin-flipped
 partner (weights 1/2 - 1/2).  ``'config'`` ``charge`` defaults to 0.
 
 A ``'config'`` entry replaces the member of the fragment with that ``charge`` by several same-N states
@@ -69,6 +71,7 @@ class FragmentSpec:
     atoms: tuple                     # 0-based atom indices in the supermolecule
     Z: float                         # sum of nuclear charges
     nelec0: int                      # electron number of the fragment before ensemble shifts (Z - fcharge)
+    twoS0: object = None             # 2S (= N_alpha - N_beta) of the reference member (``fspin``); None -> nelec0 % 2
     members: list = field(default_factory=list)
     rows: tuple = ()                 # atom indices as the user wrote them (differ from ``atoms`` if dummies are dropped)
 
@@ -82,10 +85,11 @@ class FragmentSpec:
         return f"Fragment {self.index}: atoms={tuple(self.rows or self.atoms)} Z={self.Z:g} members=[{ms}]"
 
 
-def _spin_split(n, twoS=None):
+def _spin_split(n, twoS=None, where=""):
     twoS = n % 2 if twoS is None else int(twoS)
-    if (n - twoS) % 2 or twoS > n:
-        raise ValueError(f"Spin 2S={twoS} is incompatible with {n} electrons")
+    if twoS < 0 or (n - twoS) % 2 or twoS > n:
+        raise ValueError(f"{where}spin 2S={twoS} (N_alpha - N_beta) is incompatible with {n} electrons: it must be between 0 "
+                         f"and {n} with the parity of {n}")
     return (n + twoS) // 2, (n - twoS) // 2
 
 
@@ -178,14 +182,17 @@ def build_members(frags, ensembles, mol=None):
             qs, w, twoS = charge[f.index]
             members = []
             for q, wi, s in zip(qs, w, twoS):
-                q = f.nelec0 if q is None else int(q)              # None = no electrons at all
+                is_none = q is None
+                q = f.nelec0 if is_none else int(q)                # None = no electrons at all
                 n = f.nelec0 - q
                 if n < 0:
                     raise ValueError(f"fragment {f.index}: charge {q} leaves a negative electron number")
-                na, nb = _spin_split(n, s)
+                if s is None and not is_none and q == 0:       # the reference member takes the fragment spin (fspin)
+                    s = f.twoS0
+                na, nb = _spin_split(n, s, f"fragment {f.index}, charge {q}: ")
                 members.append(Member(na, nb, wi, charge=q))
         else:
-            na, nb = _spin_split(f.nelec0)
+            na, nb = _spin_split(f.nelec0, f.twoS0, f"fragment {f.index}: ")
             members = [Member(na, nb, 1.0)]
         expanded = []
         for m in members:

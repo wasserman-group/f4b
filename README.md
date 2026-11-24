@@ -70,16 +70,21 @@ print(mf.e_tot, mf.Ep)
 | Python | 3.8 (tested); other 3.x versions that provide a `psi4` build should work |
 | PySCF | >= 2.6 (tested: 2.6.2 and 2.14.0) |
 | numpy, scipy, opt_einsum | installed by `pip` |
-| **psi4** | **must come from conda** (it cannot be installed with `pip`). It is imported unconditionally by `n2v`; `f4b` itself only uses PySCF |
+| **psi4**, `libint` | **must come from conda** (psi4 cannot be installed with `pip`): `-c conda-forge psi4 libint=2.8.1`. psi4 is imported unconditionally by `n2v`; `f4b` itself only uses PySCF |
 | `n2v` (PyPI name `ntov`), `pylibxc2`, `gbasis` | installed by `pip` automatically (`gbasis` is fetched from GitHub, so `git` must be available) |
 
 ### Recommended: new conda environment
 
 ```bash
-conda create -n f4b -c conda-forge python=3.8 psi4 git
+conda create -n f4b -c conda-forge python=3.8 psi4 libint=2.8.1 git
 conda activate f4b
 pip install "git+https://github.com/wasserman-group/f4b.git"
 ```
+
+`libint=2.8.1` (from conda-forge) is installed explicitly because some conda solutions pick a `libint` version that
+`psi4` cannot load, and then `import psi4` (and with it `import n2v`/`import f4b`) fails with an error about the
+`libint` library. If you already have an environment with this problem, fix it with
+`conda install -c conda-forge libint=2.8.1`.
 
 To work on the code (changes take effect immediately):
 
@@ -198,9 +203,29 @@ ensembles = {
                  'states': ((('F 2pz', 'beta', 0.0),), (('F 2px', 'beta', 0.0),), (('F 2py', 'beta', 0.0),))}}
   ```
   Each state is a tuple of constraints `(orbital label, spin, population)` on the meta-Lowdin localized AOs
-  (population 0 = hole). Optionally give `omega=(...)` as a starting guess. A list of such dicts defines several charges
+  (population 0 = hole, 1 = fully occupied spin orbital). The label is a regular expression looked up **among the AOs of
+  the fragment's own atoms**, so `'O 2px'` is enough for an O atom fragment of O2; a label that matches several orbitals
+  of the fragment (`'O 2p'`) or only orbitals of other fragments is an error (an AO index, or a label with the atom index
+  such as `'0 O 2px'`, is also accepted). Optionally give `omega=(...)` as a starting guess. A list of such dicts defines several charges
   per fragment. The result is stored in `mf.omega`; `optimize_omega=False` freezes the weights. This feature is
   experimental, see [Limitations](#limitations).
+
+  **The states must be distinct.** For an atom with a degenerate open shell, constrain as many orbitals as needed to
+  fix the state. The O atom (triplet, 5 alpha and 3 beta electrons, 2p^4: one doubly occupied 2p, two singly occupied) has
+  two beta 2p holes in every state, so each state needs **two** hole constraints (a single beta hole is ambiguous: the
+  SCF picks one of the two remaining orbitals and two states coincide; `f4b` warns when two states of a group converge to
+  the same density). The spin of the member must be given in the charge ensemble (`spins`: `2S`), otherwise the lowest
+  spin is used:
+  ```python
+  ens = {'charge': {0: {'charges': (0,), 'weights': (1.0,), 'spins': (2,)}},          # O triplet: 5 alpha, 3 beta
+         'config': {0: {'charge': 0, 'states': (
+             (('O 2py', 'beta', 0.0), ('O 2pz', 'beta', 0.0)),     # 2px doubly occupied
+             (('O 2px', 'beta', 0.0), ('O 2pz', 'beta', 0.0)),     # 2py doubly occupied
+             (('O 2px', 'beta', 0.0), ('O 2py', 'beta', 0.0)))}}}  # 2pz doubly occupied
+  mol = fgto.M(atom='O 0 0 0; O 0 0 2.28', unit='bohr', basis='6-31g', fragments={0: [0], 1: [1]}, ensembles=ens)
+  ```
+  A population-1 constraint (e.g. `('O 2px', 'beta', 1.0)`) also selects the doubly occupied orbital but forces the electron
+  into the localized orbital, which gives a clearly higher state energy (tens of mEh here); holes are preferable.
 
 Unknown keys and the old tuple-style input raise an error.
 

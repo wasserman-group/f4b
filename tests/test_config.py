@@ -101,3 +101,52 @@ def test_hf_reference_6_31g():
     assert mf.e_tot == pytest.approx(ks.e_tot, abs=1e-2)
     w = mf.omega[(0, 0)]
     assert w.sum() == pytest.approx(1.0) and w[2] > w[0]          # sigma-hole configuration dominates
+
+
+def o2(states, fragments=None, **kw):
+    ens = {"charge": {0: {"charges": (0,), "weights": (1.0,), "spins": (2,)}},
+           "config": {0: {"charge": 0, "states": states}}}
+    return fgto.M(atom="O 0 0 0; O 0 0 2.28", unit="bohr", basis="sto-3g", fragments=fragments or {0: [0], 1: [1]},
+                  ensembles=ens, **kw)
+
+
+def test_ao_label_is_resolved_within_the_fragment():
+    """'O 2px' also matches the other O atom of O2; the constraint must pick the AO of the fragment's own atom."""
+    mol = o2(tuple(((f"O 2p{k}", "beta", 0.0),) for k in "xyz"))
+    idx = [m.config.constraints[0].index for m in mol.frags[0].members]
+    assert idx == [2, 3, 4]                                    # 2px 2py 2pz of atom 0 (sto-3g AOs 0-4: 1s 2s 2px 2py 2pz)
+    ens = {"charge": {1: {"charges": (0,), "weights": (1.0,), "spins": (2,)}},
+           "config": {1: {"charge": 0, "states": ((("O 2px", "beta", 0.0),),)}}}
+    mol1 = fgto.M(atom="O 0 0 0; O 0 0 2.28", unit="bohr", basis="sto-3g", fragments={0: [0], 1: [1]}, ensembles=ens)
+    assert mol1.frags[1].members[0].config.constraints[0].index == 7        # second O, not the first
+
+
+def test_ao_label_on_another_fragment_raises():
+    with pytest.raises(ValueError, match="not on the atoms"):
+        o2(((("1 O 2px", "beta", 0.0),),))
+
+
+def test_ambiguous_label_without_fragment_still_raises():
+    with pytest.raises(ValueError, match="exactly one"):
+        o2(((("O 2p", "beta", 0.0),),))
+
+
+def test_full_occupation_and_hole_constraints_are_solved():
+    """A beta population of 1 (attractive multiplier) is reached like a hole; two holes select the doubly occupied p."""
+    from f4b.fragment import FragmentSystem
+    one = ((("O 2px", "beta", 1.0),),)
+    two = ((("O 2py", "beta", 0.0), ("O 2pz", "beta", 0.0)),)
+    for states, target in [(one, 1.0), (two, 0.0)]:
+        mol = o2(states)
+        r = FragmentSystem(mol, grid_level=3).solve(np.zeros((mol.mol.nao,) * 2))
+        it = r.raw[0][0]
+        pops = it["m"].config.populations((it["Da"], it["Db"]))
+        assert np.allclose(pops, target, atol=2e-4)
+
+
+def test_same_density_states_trigger_a_warning():
+    """For the triplet O atom a single beta hole is ambiguous: two of the three states coincide."""
+    from f4b.fragment import FragmentSystem
+    mol = o2(tuple(((f"O 2p{k}", "beta", 0.0),) for k in "xyz"))
+    with pytest.warns(UserWarning, match="same density"):
+        FragmentSystem(mol, grid_level=3).solve(np.zeros((mol.mol.nao,) * 2))

@@ -206,7 +206,7 @@ def build_members(frags, ensembles, mol=None):
             for k, (st, o) in enumerate(zip(states, om0)):
                 st = deepcopy(st) if isinstance(st, ConfigState) else ConfigState(st)
                 st.name = st.name or f"{f.index}:{m.charge}:{k}"
-                st.bind(mol)
+                st.bind(mol, atoms=set(f.atoms))
                 expanded.append(Member(m.na, m.nb, 0.0, charge=m.charge, config=st, group=key, omega=float(o), gweight=m.weight))
         used = {m.charge for m in members}
         for (fi, q) in config:

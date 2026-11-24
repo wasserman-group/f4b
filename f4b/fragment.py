@@ -79,6 +79,7 @@ class FragmentSystem:
         self._S = None
         self.sym = None                 # FragSymmetry: solve only one fragment per orbit
         self._warned_sym = set()
+        self._warned_same = set()
         self.guess_members = {}         # restart: {member key: (2, nao, nao)} starting densities of the fragment SCFs
         self.guess_frags = {}           # restart: {fragment: (2, nao, nao)}, rescaled to each member's electron count
 
@@ -156,6 +157,7 @@ class FragmentSystem:
                 Vpa, Vpb = (Vp[0], Vp[1]) if Vp.ndim == 3 else (Vp, Vp)
                 E = mf.e_tot - np.einsum("ij,ij", D[0], Vpa) - np.einsum("ij,ij", D[1], Vpb)
                 res.raw[k].append(dict(m=m, Da=D[0], Db=D[1], E=E, Ep=mf.e_tot))
+            self._check_distinct_states(frag, res.raw[k])
         self.assemble(res)
         for k, frag in enumerate(self.fmol.frags):
             if sym is not None and sym.orbits[k][0] == k and k not in self._warned_sym:
@@ -166,6 +168,20 @@ class FragmentSystem:
                                   f"symmetry operations (max deviation {dev:.1e}); its state breaks the symmetry "
                                   "(open-shell fragment?), so the symmetrized Vp is only approximate")
         return res
+
+    def _check_distinct_states(self, frag, items):
+        """Warn once if two configuration states of the same group converged to the same density."""
+        if frag.index in self._warned_same:
+            return
+        cfg = [it for it in items if it["m"].config is not None]
+        for i, a in enumerate(cfg):
+            for b in cfg[i + 1:]:
+                if a["m"].group == b["m"].group and np.abs(a["Da"] - b["Da"]).max() + np.abs(a["Db"] - b["Db"]).max() < 1e-6:
+                    self._warned_same.add(frag.index)
+                    warnings.warn(f"fragment {frag.index}: configuration states {a['m'].config.name} and {b['m'].config.name} "
+                                  "converged to the same density, so the constraints do not select distinct states (e.g. a "
+                                  "single beta hole for a triplet O atom is ambiguous: constrain two holes instead)")
+                    return
 
     def assemble(self, res):
         """(Re)compute fragment densities and energies from the member results with the current member weights

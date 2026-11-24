@@ -20,7 +20,8 @@ class Constraint:
     """Population ``nelec`` of the localized AO ``ao`` for spin ``spin``.
 
     ``ao`` is an AO index of the supermolecule or a regular expression matched against ``mol.ao_labels()``
-    (e.g. ``'F 2pz'`` or ``'0 F 2pz'``); it must select exactly one AO.
+    (e.g. ``'F 2pz'`` or ``'0 F 2pz'``).  A label is looked up among the AOs of the atoms of the fragment the state belongs to
+    (so ``'O 2px'`` is enough in O2 when the fragment is one O atom); it must select exactly one AO.
     """
 
     def __init__(self, ao, spin, nelec=0.0):
@@ -32,14 +33,24 @@ class Constraint:
         self.index = None
         self.P = None                     # AO-basis projector S c c^T S (set by bind)
 
-    def bind(self, mol, S, C):
+    def bind(self, mol, S, C, atoms=None):
         if isinstance(self.ao, (int, np.integer)):
             idx = [int(self.ao)]
         else:
             idx = list(mol.search_ao_label(self.ao))
+            if atoms is not None:
+                owner = np.empty(mol.nao, int)
+                for a, (_, _, p0, p1) in enumerate(mol.aoslice_by_atom()):
+                    owner[p0:p1] = a
+                allmatch = idx
+                idx = [i for i in idx if owner[i] in atoms]
+                if not idx and allmatch:
+                    raise ValueError(f"constraint AO '{self.ao}' only matches orbitals {[mol.ao_labels()[i] for i in allmatch]}, "
+                                     f"which are not on the atoms {sorted(atoms)} of the fragment")
         if len(idx) != 1:
             labels = [mol.ao_labels()[i] for i in idx]
-            raise ValueError(f"constraint AO '{self.ao}' matches {len(idx)} orbitals {labels}; it must match exactly one")
+            raise ValueError(f"constraint AO '{self.ao}' matches {len(idx)} orbitals {labels}; it must match exactly one "
+                             "(use the atom index, e.g. '0 O 2px')")
         self.index = idx[0]
         c = C[:, self.index]
         self.P = np.outer(S @ c, S @ c)
@@ -66,11 +77,11 @@ class ConfigState:
         self.name = name
         self.vc = None
 
-    def bind(self, mol):
+    def bind(self, mol, atoms=None):
         S = mol.intor("int1e_ovlp")
         C = orth.orth_ao(mol, "meta_lowdin", s=S)
         for c in self.constraints:
-            c.bind(mol, S, C)
+            c.bind(mol, S, C, atoms)
         return self
 
     def fock_add(self, vc=None):
@@ -94,7 +105,8 @@ def solve_multipliers(state, run, vstart=0.2, vmax=50.0, ptol=1e-5, rtol=1e-6, s
 
     ``run(vc) -> (Da, Db)`` performs the constrained SCF.  A constraint with target population 0 (a hole) is
     satisfied by a penalty: the multiplier is doubled until the population drops below ``ptol`` (the population
-    only vanishes asymptotically in general).  Other targets are found by bracketing + Brent.
+    only vanishes asymptotically in general); a full spin orbital (population 1) is the same with an attractive multiplier (tolerance 1e-4).
+    Other targets are found by bracketing (positive or negative multiplier) + Brent.
     Several constraints are solved by cyclic sweeps over the individual multipliers.
     """
     from scipy.optimize import brentq
@@ -114,17 +126,29 @@ def solve_multipliers(state, run, vstart=0.2, vmax=50.0, ptol=1e-5, rtol=1e-6, s
                         raise RuntimeError(f"CDFT: population of {c} cannot be driven below {ptol:g} with a multiplier "
                                            f"<= {vmax:g} (is the state reachable?)")
                 vc[i] = v
+            elif c.nelec >= 1.0 - 1e-12:
+                # a fully occupied spin orbital is reached only asymptotically too: attractive multiplier
+                # (the deficit decays only like 1/|v|, so the tolerance is looser than for holes)
+                ptol_full = max(ptol, 1e-4)
+                v = -vstart if vc[i] == 0.0 else vc[i]
+                while 1.0 - pop(v) > ptol_full:
+                    v *= 2.0
+                    if abs(v) > 10 * vmax:
+                        raise RuntimeError(f"CDFT: population of {c} cannot be driven above {1.0 - ptol_full:g} with a "
+                                           f"multiplier |v| <= {10 * vmax:g} (is the state reachable?)")
+                vc[i] = v
             else:
                 f = lambda v: pop(v) - c.nelec                       # noqa: E731
-                lo, hi = 0.0, vstart
-                f0 = f(lo)
+                f0 = f(0.0)
                 if abs(f0) < rtol:
                     vc[i] = 0.0
                     continue
                 sign = np.sign(f0)
+                # population above the target: repulsive (positive) multiplier; below it: attractive (negative)
+                lo, hi = 0.0, vstart * sign
                 while np.sign(f(hi)) == sign:
                     lo, hi = hi, hi * 2.0
-                    if hi > vmax:
+                    if abs(hi) > vmax:
                         raise RuntimeError(f"CDFT: could not bracket the multiplier of {c}")
                 vc[i] = brentq(f, lo, hi, xtol=1e-8, rtol=1e-8)
         if log:

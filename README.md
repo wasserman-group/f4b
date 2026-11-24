@@ -153,6 +153,13 @@ Use `grid_level=6` (the default) in both runs when comparing energies to better 
 | `fragments` | `{fragment: [atoms]}`, **0-based**; must contain every real atom exactly once. Default (`None`): one fragment per atom |
 | `ensembles` | dict of ensembles, see below. Default: no ensemble (integer electron numbers) |
 | `fcharge` | `{fragment: charge}`; missing fragments are neutral. Example: `{0: 1}` for He+ in HeH+ |
+| `fspin` | `{fragment: 2S}` with `2S = N_alpha - N_beta` (as `spin` in PySCF; multiplicity = 2S + 1); missing fragments get the lowest spin (singlet/doublet). Example: `{0: 2, 1: 2}` for two triplet O atoms. A charge ensemble can set the spin of each of its members (below) and then overrides `fspin` |
+
+`fcharge` and `fspin` describe the fragment *before* any ensemble: its electron number is `Z - fcharge` and `fspin` is the
+spin of that state. With a charge ensemble, the member with charge `0` (the reference electron number) takes `fspin`
+unless the ensemble gives its own `spins`; members with other electron numbers take their `spins` or, if not given,
+the lowest spin. As with `fcharge`, a list with one value per fragment (in order) is also accepted. An impossible spin
+(wrong parity, more unpaired electrons than electrons, negative) raises an error naming the fragment.
 
 Everything that takes a fragment or atom number is **0-based**, like PySCF (`frag=` in `make_rdm1`/`eval_density`, keys
 of `mf.omega`, ...).
@@ -192,8 +199,13 @@ ensembles = {
 
 * **`'charge'`**: for each fragment, the `charges` of the members **relative to the neutral fragment**
   (`+1` = one electron fewer, `-1` = one more, `0` = neutral; the `fcharge` of the fragment is the neutral reference),
-  their `weights` (total weight of each member, summing to 1) and optionally `spins` (`2S` of each member; default:
-  lowest spin allowed by the electron count). `None` is a member without electrons: zero density, no calculation.
+  their `weights` (total weight of each member, summing to 1) and optionally `spins` (`2S = N_alpha - N_beta` of each
+  member; one entry per member, `None` = default). The default is `fspin` for the neutral (charge 0) member and the lowest
+  spin allowed by the electron count for the others; `spins` overrides `fspin`. A charge of `None` is a member without
+  electrons: zero density, no calculation.
+  ```python
+  {0: {'charges': (0, -1), 'weights': (0.5, 0.5), 'spins': (2, 1)}}    # neutral member 2S = 2 (triplet), anion member 2S = 1
+  ```
 * **`'spin'`**: a fragment (or a list of fragments) whose open-shell members are averaged with their spin-flipped partner
   (half of the weight each). No extra calculation is needed for the flipped state.
 * **`'config'`** (configuration ensembles): constrained-DFT states of a fragment whose weights `omega` are
@@ -214,15 +226,15 @@ ensembles = {
   fix the state. The O atom (triplet, 5 alpha and 3 beta electrons, 2p^4: one doubly occupied 2p, two singly occupied) has
   two beta 2p holes in every state, so each state needs **two** hole constraints (a single beta hole is ambiguous: the
   SCF picks one of the two remaining orbitals and two states coincide; `f4b` warns when two states of a group converge to
-  the same density). The spin of the member must be given in the charge ensemble (`spins`: `2S`), otherwise the lowest
-  spin is used:
+  the same density). The spin of the states is the spin of the fragment: set it with `fspin` (or `spins` in a charge
+  ensemble), otherwise the lowest spin is used:
   ```python
-  ens = {'charge': {0: {'charges': (0,), 'weights': (1.0,), 'spins': (2,)}},          # O triplet: 5 alpha, 3 beta
-         'config': {0: {'charge': 0, 'states': (
+  ens = {'config': {0: {'charge': 0, 'states': (
              (('O 2py', 'beta', 0.0), ('O 2pz', 'beta', 0.0)),     # 2px doubly occupied
              (('O 2px', 'beta', 0.0), ('O 2pz', 'beta', 0.0)),     # 2py doubly occupied
              (('O 2px', 'beta', 0.0), ('O 2py', 'beta', 0.0)))}}}  # 2pz doubly occupied
-  mol = fgto.M(atom='O 0 0 0; O 0 0 2.28', unit='bohr', basis='6-31g', fragments={0: [0], 1: [1]}, ensembles=ens)
+  mol = fgto.M(atom='O 0 0 0; O 0 0 2.28', unit='bohr', basis='6-31g', fragments={0: [0], 1: [1]},
+               fspin={0: 2, 1: 2}, ensembles=ens)                  # O triplet: 5 alpha, 3 beta (fragment 1: no ensemble)
   ```
   A population-1 constraint (e.g. `('O 2px', 'beta', 1.0)`) also selects the doubly occupied orbital but forces the electron
   into the localized orbital, which gives a clearly higher state energy (tens of mEh here); holes are preferable.

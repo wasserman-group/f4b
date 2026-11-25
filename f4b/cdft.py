@@ -1,15 +1,20 @@
-"""Configuration states through constrained DFT (population constraints on localized AOs).
+"""Configuration states through constrained DFT (population constraints on orbitals).
 
 A *configuration state* of a fragment is a Slater-determinant (UKS) state selected by constraining the population of
-one or more meta-Loewdin localized atomic orbitals, e.g. a beta 2p_z hole of the F atom::
+one or more orbitals, e.g. a beta 2p_z hole of the F atom::
 
     ConfigState([Constraint('F 2pz', 'beta', 0.0)])
 
+The orbital is a meta-Loewdin localized AO, a normalized combination of them (``{'C 2py': 1, 'O 2py': -1}``) or, for the
+automatic ensembles (:mod:`f4b.shells`), a molecular orbital of the isolated fragment given as an AO vector.
+
 The constraint is enforced by a Lagrange multiplier ``vc``: the Fock matrix of spin ``s`` gets ``vc * P`` with
-``P = S c c^T S`` (``c`` = localized orbital).  The multipliers are found once, on the isolated fragment (Vp = 0), and
+``P = S c c^T S`` (``c`` = orbital).  The multipliers are found once, on the isolated fragment (Vp = 0), and
 then held fixed during the P-DFT iterations (the constraint is only used to *select* the state; Vp is free to move the
 population afterwards).  The energies of the states are the plain KS energies (the constraint term is not included).
 """
+import re
+
 import numpy as np
 from pyscf.lo import orth
 
@@ -17,11 +22,17 @@ _SPIN = {0: 0, 1: 1, "a": 0, "alpha": 0, "up": 0, "b": 1, "beta": 1, "down": 1}
 
 
 class Constraint:
-    """Population ``nelec`` of the localized AO ``ao`` for spin ``spin``.
+    """Population ``nelec`` of an orbital for spin ``spin``.
 
-    ``ao`` is an AO index of the supermolecule or a regular expression matched against ``mol.ao_labels()``
-    (e.g. ``'F 2pz'`` or ``'0 F 2pz'``).  A label is looked up among the AOs of the atoms of the fragment the state belongs to
-    (so ``'O 2px'`` is enough in O2 when the fragment is one O atom); it must select exactly one AO.
+    ``ao`` selects the orbital:
+
+    * an AO index of the supermolecule, or a regular expression matched against ``mol.ao_labels()`` (``'F 2pz'``, ``'0 F 2pz'``);
+    * a combination of such AOs, ``{'C 2py': 1.0, 'O 2py': -1.0}`` or ``[('C 2py', 1.0), ('O 2py', -1.0)]``;
+    * an array with one coefficient per localized orbital (length ``nao``).
+
+    A label is looked up among the AOs of the atoms of the fragment the state belongs to (so ``'O 2px'`` is enough in O2
+    when the fragment is one O atom) and must select exactly one AO; use the atom index (``'1 O 2px'``) to tell the atoms
+    of a fragment apart.  The meta-Loewdin orbitals are orthonormal, so the coefficients of a combination are normalized.
     """
 
     def __init__(self, ao, spin, nelec=0.0):
@@ -31,28 +42,64 @@ class Constraint:
         self.spin = _SPIN[spin]
         self.nelec = float(nelec)
         self.index = None
+        self.vector = None                # AO-basis coefficients of the orbital (automatic ensembles), instead of ``ao``
         self.P = None                     # AO-basis projector S c c^T S (set by bind)
 
-    def bind(self, mol, S, C, atoms=None):
-        if isinstance(self.ao, (int, np.integer)):
-            idx = [int(self.ao)]
-        else:
-            idx = list(mol.search_ao_label(self.ao))
-            if atoms is not None:
-                owner = np.empty(mol.nao, int)
-                for a, (_, _, p0, p1) in enumerate(mol.aoslice_by_atom()):
-                    owner[p0:p1] = a
-                allmatch = idx
-                idx = [i for i in idx if owner[i] in atoms]
-                if not idx and allmatch:
-                    raise ValueError(f"constraint AO '{self.ao}' only matches orbitals {[mol.ao_labels()[i] for i in allmatch]}, "
-                                     f"which are not on the atoms {sorted(atoms)} of the fragment")
+    @classmethod
+    def from_vector(cls, vector, spin, nelec=0.0, label=None):
+        """Constraint on the orbital with AO coefficients ``vector`` (normalized: c^T S c = 1)."""
+        c = cls(label, spin, nelec)
+        c.vector = np.asarray(vector, float)
+        return c
+
+    @staticmethod
+    def _find(label, mol, atoms):
+        if isinstance(label, (int, np.integer)):
+            return int(label)
+        pattern = label.strip()
+        if re.match(r"\d+\s", pattern):                 # '1 O 2px': the atom index must not match '11 O 2px'
+            pattern = "^" + pattern
+        idx = list(mol.search_ao_label(pattern))
+        if atoms is not None:
+            owner = np.empty(mol.nao, int)
+            for a, (_, _, p0, p1) in enumerate(mol.aoslice_by_atom()):
+                owner[p0:p1] = a
+            allmatch = idx
+            idx = [i for i in idx if owner[i] in atoms]
+            if not idx and allmatch:
+                raise ValueError(f"constraint AO '{label}' only matches orbitals {[mol.ao_labels()[i] for i in allmatch]}, "
+                                 f"which are not on the atoms {sorted(atoms)} of the fragment")
         if len(idx) != 1:
             labels = [mol.ao_labels()[i] for i in idx]
-            raise ValueError(f"constraint AO '{self.ao}' matches {len(idx)} orbitals {labels}; it must match exactly one "
+            raise ValueError(f"constraint AO '{label}' matches {len(idx)} orbitals {labels}; it must match exactly one "
                              "(use the atom index, e.g. '0 O 2px')")
-        self.index = idx[0]
-        c = C[:, self.index]
+        return idx[0]
+
+    def _coefficients(self, mol, atoms):
+        """Coefficients of the orbital in the (orthonormal) localized basis, normalized."""
+        ao, a = self.ao, np.zeros(mol.nao)
+        if isinstance(ao, np.ndarray):
+            if ao.shape != (mol.nao,):
+                raise ValueError(f"constraint orbital array must have one coefficient per orbital ({mol.nao}), got shape {ao.shape}")
+            a = ao.astype(float)
+        elif isinstance(ao, dict) or (isinstance(ao, (list, tuple)) and ao and isinstance(ao[0], (list, tuple))):
+            for label, coef in (ao.items() if isinstance(ao, dict) else ao):
+                a[self._find(label, mol, atoms)] += float(coef)
+        else:
+            a[self._find(ao, mol, atoms)] = 1.0
+        norm = np.linalg.norm(a)
+        if norm < 1e-12:
+            raise ValueError(f"constraint orbital {self.ao!r} has zero norm")
+        return a / norm
+
+    def bind(self, mol, S, C, atoms=None):
+        if self.vector is not None:
+            c = self.vector
+        else:
+            a = self._coefficients(mol, atoms)
+            nz = np.flatnonzero(np.abs(a) > 1e-12)
+            self.index = int(nz[0]) if len(nz) == 1 else None
+            c = C @ a
         self.P = np.outer(S @ c, S @ c)
         return self
 
@@ -61,7 +108,9 @@ class Constraint:
         return float(np.einsum("ij,ij", self.P, D[self.spin]))
 
     def __repr__(self):
-        lab = self.ao if self.index is None else f"{self.ao}[{self.index}]"
+        lab = self.ao if self.index is None or not isinstance(self.ao, str) else f"{self.ao}[{self.index}]"
+        if self.vector is not None:
+            lab = self.ao or "orbital"
         return f"Constraint({lab}, spin={'ab'[self.spin]}, nelec={self.nelec:g})"
 
 
@@ -76,10 +125,11 @@ class ConfigState:
         self.constraints = [c if isinstance(c, Constraint) else Constraint(*c) for c in constraints]
         self.name = name
         self.vc = None
+        self.desc = None                  # short text describing the state (automatic ensembles)
 
     def bind(self, mol, atoms=None):
         S = mol.intor("int1e_ovlp")
-        C = orth.orth_ao(mol, "meta_lowdin", s=S)
+        C = None if all(c.vector is not None for c in self.constraints) else orth.orth_ao(mol, "meta_lowdin", s=S)
         for c in self.constraints:
             c.bind(mol, S, C, atoms)
         return self
@@ -154,3 +204,4 @@ def solve_multipliers(state, run, vstart=0.2, vmax=50.0, ptol=1e-5, rtol=1e-6, s
         if log:
             log(f"  CDFT sweep {sweep + 1}: vc = {vc}")
     return vc
+

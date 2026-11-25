@@ -20,8 +20,7 @@ from f4b import fgto, pdft
 warnings.filterwarnings("ignore")
 
 H2_ENS = {"spin": [0, 1]}
-LIH_ENS = {"charge": {0: {"charges": (0, -1), "weights": (0.56826, 0.43174)},
-                      1: {"charges": (1, 0), "weights": (0.43174, 0.56826)}},
+LIH_ENS = {"charge": {0: 3.43174, 1: 0.56826},          # electrons of Li (Li + Li-) and of H (no electrons + H)
            "spin": [0, 1]}
 
 CASES = {

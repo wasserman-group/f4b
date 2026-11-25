@@ -7,9 +7,11 @@ Example::
                  fragments={0: [0], 1: [1]},                  # fragment index -> atom indices
                  ensembles={'spin': [0, 1]})                  # see f4b.ensemble for 'charge' / 'config'
 
-``fcharge={fragment: charge}`` and ``fspin={fragment: 2S}`` set the charge and the spin (2S = N_alpha - N_beta, as
-``spin`` in PySCF) of the fragments; the defaults are neutral and the lowest spin (singlet or doublet).  A charge ensemble can
-give the spin of each of its members (``'spins'``), which overrides ``fspin``.
+``fcharge={fragment: charge}`` sets the charge of ion fragments (only needed without a charge ensemble: a charge ensemble
+gives the electron numbers directly, e.g. ``{'charge': {0: 1.4, 1: 0.6}}``).  ``fspin={fragment: 2S}`` sets the spin
+(2S = N_alpha - N_beta, as ``spin`` in PySCF) of the neutral fragment; the default is the ground-state spin by Hund's rule
+(:mod:`f4b.shells`).  The advanced form of the charge ensemble can give the spin of each member (``'spins'``), which overrides
+``fspin``.
 
 Atoms and fragments are numbered from 0, atoms in the order written in ``atom`` (rows of a Z-matrix included).
 Dummy centres (``X`` in a Z-matrix: no nucleus, no basis) and ghost atoms (``ghost-H``: basis functions, no nucleus)
@@ -27,6 +29,7 @@ import numpy as np
 from pyscf import gto
 
 from .ensemble import FragmentSpec, build_members
+from .shells import Reference
 
 
 def _symbol(sym):
@@ -109,16 +112,31 @@ class FragMole:
             idx = tuple(row2atom[a] for a in idx)
             Z = float(sum(Zs[a] for a in idx))
             frags.append(FragmentSpec(index=i, atoms=idx, Z=Z, nelec0=int(round(Z - fcharge.get(i, 0))), rows=fragments[i],
-                                      twoS0=None if fspin.get(i) is None else int(fspin[i])))
-        self.frags = build_members(frags, self.ensembles, mol=self.mol)
+                                      twoS0=None if fspin.get(i) is None else int(fspin[i]), fcharge_given=i in fcharge))
+        self._shells = {}
+        self.frags = build_members(frags, self.ensembles, mol=self.mol, shells=self._reference)
         nel = sum(f.nelec_avg for f in self.frags)
         if abs(nel - mol.nelectron) > 1e-8:
             raise ValueError(
                 f"Fragment/ensemble electron count ({nel:g}) does not match the electron number of the "
-                f"molecule ({mol.nelectron}). Use 'fcharge' or a charge ensemble to set the fragment "
-                f"electron numbers (e.g. fcharge={0: 1} for HeH+ with fragments He+ and H).")
+                f"molecule ({mol.nelectron}). Set the fragment electron numbers with a charge ensemble "
+                f"(e.g. ensembles={{'charge': {{0: 1.4, 1: 0.6}}}}) or, for ions without ensemble, with fcharge "
+                f"(e.g. fcharge={{0: 1}} for HeH+ with fragments He+ and H).")
         self._fmoles = {}
         return self
+
+    def _reference(self, frag, N):
+        key = (frag.index, int(N))
+        if key not in self._shells:
+            self._shells[key] = Reference(self.mol, frag, N, self.basis, self.mole_kwargs)
+        return self._shells[key]
+
+    def shells(self, frag, N=None):
+        """Orbital shells (:class:`f4b.shells.Reference`) of fragment ``frag`` (0-based) with ``N`` electrons (default: the
+        neutral fragment, ``Z - fcharge``): the degenerate groups of orbitals that Hund's rule and the automatic configuration
+        ensembles use.  ``print`` it to see them."""
+        f = self.frags[frag]
+        return self._reference(f, f.nelec0 if N is None else N)
 
     @property
     def nfrag(self):

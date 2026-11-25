@@ -94,18 +94,18 @@ def _spins(mol, k):
     return [(m.na, m.nb) for m in mol.frags[k].members]
 
 
-def test_fspin_default_is_lowest_spin():
+def test_default_spin_follows_hund_and_fspin_overrides():
     mol = _o2()
-    assert _spins(mol, 0) == [(4, 4)] and _spins(mol, 1) == [(4, 4)]
+    assert _spins(mol, 0) == [(5, 3)] and _spins(mol, 1) == [(5, 3)]       # triplet O atoms by Hund's rule
     assert mol.frags[0].twoS0 is None
 
 
 def test_fspin_sets_the_fragment_spin():
-    mol = _o2(fspin={0: 2, 1: 2})
-    assert _spins(mol, 0) == [(5, 3)] and _spins(mol, 1) == [(5, 3)]
-    mol = _o2(fspin={1: 2})                                             # only fragment 1; fragment 0 keeps the default
-    assert _spins(mol, 0) == [(4, 4)] and _spins(mol, 1) == [(5, 3)]
-    assert _spins(_o2(fspin=[2, 0]), 0) == [(5, 3)]                      # one value per fragment, in order
+    mol = _o2(fspin={0: 0, 1: 4})
+    assert _spins(mol, 0) == [(4, 4)] and _spins(mol, 1) == [(6, 2)]
+    mol = _o2(fspin={1: 0})                                             # only fragment 1; fragment 0 keeps the Hund default
+    assert _spins(mol, 0) == [(5, 3)] and _spins(mol, 1) == [(4, 4)]
+    assert _spins(_o2(fspin=[0, 2]), 0) == [(4, 4)]                      # one value per fragment, in order
 
 
 def test_fspin_with_fcharge():
@@ -143,15 +143,15 @@ def test_fspin_errors():
         _o2(fspin={0: -2})
     with pytest.raises(ValueError, match="unknown fragment"):
         _o2(fspin={3: 2})
-    with pytest.raises(ValueError, match="fragment 0, charge -1"):
+    with pytest.raises(ValueError, match=r"fragment 0 \(9 electrons\)"):
         _o2(ensembles={"charge": {0: {"charges": (0, -1), "weights": (0.5, 0.5), "spins": (2, 2)}}})
 
 
 def test_fspin_breaks_fragment_symmetry():
     from f4b.symmetry import FragSymmetry
     assert FragSymmetry(_o2(), tol=1e-4).nontrivial
-    assert not FragSymmetry(_o2(fspin={0: 2}), tol=1e-4).nontrivial
-    assert FragSymmetry(_o2(fspin={0: 2, 1: 2}), tol=1e-4).nontrivial
+    assert not FragSymmetry(_o2(fspin={0: 0}), tol=1e-4).nontrivial
+    assert FragSymmetry(_o2(fspin={0: 0, 1: 0}), tol=1e-4).nontrivial
 
 
 def test_fspin_with_configuration_ensemble_needs_no_charge_ensemble():

@@ -52,8 +52,10 @@ print(mf.e_tot, mf.Ep)
   `functional-T` (non-additive kinetic/XC functional), `inversion` (Kohn-Sham inversion of `n_f`) and
   `reference` (match a reference density, e.g. from HF, CCSD or a larger KS calculation).
 * Any number of fragments (tested up to 4: H3+, H2O in three fragments, NH3 in four).
-* Ensembles of fragments with fixed weights: **charge** (fractional electron number), **spin** (spin-symmetrized
-  open-shell fragments) and **configuration** ensembles (constrained-DFT states with weights optimized during the run).
+* Ensembles of fragments from simple inputs: fractional **electron numbers** per fragment (`{'charge': {0: 1.4, 1: 0.6}}`: the ions and weights are
+  worked out), **spin** symmetrization of open-shell fragments, and **configuration** ensembles of degenerate shells (`{'config': [0]}`: the
+  degenerate orbitals, their filling and the states are found automatically; the weights are optimized during the run).
+* Ground-state spins of the fragments and of the members of the ensembles by Hund's rule (atoms, linear and symmetric molecules; `fspin` to override).
 * Fragment point-group symmetry (`frag_symm='auto'`): equivalent fragments are solved once.
 * Exact one-electron treatment (H2+) with no self-interaction error.
 * Save a result to disk and resume from it (also with a different method): `mf.save(...)`, `restart=`, `Vp0=`, `dm0=`.
@@ -146,20 +148,14 @@ Use `grid_level=6` (the default) in both runs when comparing energies to better 
 
 ## Defining the system: `fgto.M`
 
-`fgto.M(...)` takes the usual `pyscf.gto.M` keywords (`atom`, `basis`, `charge`, `spin`, `unit`, ...) plus three new ones.
+`fgto.M(...)` takes the usual `pyscf.gto.M` keywords (`atom`, `basis`, `charge`, `spin`, `unit`, ...) plus the following ones.
 
 | keyword | meaning |
 |---|---|
 | `fragments` | `{fragment: [atoms]}`, **0-based**; must contain every real atom exactly once. Default (`None`): one fragment per atom |
-| `ensembles` | dict of ensembles, see below. Default: no ensemble (integer electron numbers) |
-| `fcharge` | `{fragment: charge}`; missing fragments are neutral. Example: `{0: 1}` for He+ in HeH+ |
-| `fspin` | `{fragment: 2S}` with `2S = N_alpha - N_beta` (as `spin` in PySCF; multiplicity = 2S + 1); missing fragments get the lowest spin (singlet/doublet). Example: `{0: 2, 1: 2}` for two triplet O atoms. A charge ensemble can set the spin of each of its members (below) and then overrides `fspin` |
-
-`fcharge` and `fspin` describe the fragment *before* any ensemble: its electron number is `Z - fcharge` and `fspin` is the
-spin of that state. With a charge ensemble, the member with charge `0` (the reference electron number) takes `fspin`
-unless the ensemble gives its own `spins`; members with other electron numbers take their `spins` or, if not given,
-the lowest spin. As with `fcharge`, a list with one value per fragment (in order) is also accepted. An impossible spin
-(wrong parity, more unpaired electrons than electrons, negative) raises an error naming the fragment.
+| `ensembles` | dict of ensembles (electron numbers, spin symmetrization, degenerate configurations), see [Ensembles](#ensembles). Default: none |
+| `fcharge` | `{fragment: charge}`: charge of an ion fragment **without** charge ensemble, e.g. `{0: 1}` for He+ in HeH+. Missing fragments are neutral |
+| `fspin` | `{fragment: 2S}` with `2S = N_alpha - N_beta` (as `spin` in PySCF; multiplicity = 2S + 1): spin of the fragment. Default: the ground-state spin by Hund's rule. Example: `{0: 0}` forces a singlet O atom |
 
 Everything that takes a fragment or atom number is **0-based**, like PySCF (`frag=` in `make_rdm1`/`eval_density`, keys
 of `mf.omega`, ...).
@@ -172,6 +168,12 @@ The AO ordering is therefore identical in all fragments and in the whole system.
 fragments may differ from that of the whole system (for example, a charge ensemble with 1.3 alpha and 0.7 beta
 electrons for a closed-shell H2 is accepted; the inversion target is then spin-unpolarized).
 
+**Spin.** Every fragment (and every member of an ensemble) gets its ground-state spin by **Hund's rule** unless `fspin` (or
+the `'spins'` of an explicit charge ensemble) says otherwise: O atom: triplet, F: doublet, CO: singlet, O2: triplet, CO-: doublet,
+H3+ fragments: doublet, ... `fspin` applies to the neutral member of the fragment (the one with `Z - fcharge` electrons); the other members of a
+charge ensemble use Hund's rule. How the spin is found is described in [Spin and shells](#spin-and-shells-hunds-rule).
+An impossible spin (wrong parity, more unpaired electrons than electrons, negative) raises an error naming the fragment.
+
 **Dummy and ghost atoms.** Z-matrix dummy centres (`X`) are dropped (no nucleus, no basis). Ghost atoms
 (`ghost-H`, `X-H`) stay in the calculation but carry no nuclear charge. Neither belongs to a fragment: list in
 `fragments` only the real atoms, numbered by their row in `atom` (dummy rows counted, 0-based). H3+ from a Z-matrix:
@@ -180,66 +182,129 @@ electrons for a closed-shell H2 is accepted; the inversion target is then spin-u
 atom = 'X; X 1 1.0; H 1 1.0 2 90.0; H 1 1.0 2 90.0 3 120.0; H 1 1.0 2 90.0 3 -120.0'
 mol = fgto.M(atom=atom, unit='bohr', basis='cc-pvdz', charge=1,
              fragments={0: [2], 1: [3], 2: [4]},
-             ensembles={'charge': {i: {'charges': (0, None), 'weights': (2/3, 1/3)} for i in range(3)}})
+             ensembles={'charge': {0: 2/3, 1: 2/3, 2: 2/3}})
 ```
 
 `mol.mol` is the PySCF Mole (real and ghost atoms only), `mol.row2atom` maps input rows to its atom numbers.
+`print(mol)` lists the members of every fragment (electrons, weights, configuration states).
 
 ## Ensembles
 
-`ensembles` is a dict keyed by the ensemble type. All weights are fixed in `charge` and `spin`.
+`ensembles` is a dict keyed by the ensemble type. Three types, all optional:
 
 ```python
 ensembles = {
-    'charge': {0: {'charges': (0, -1),   'weights': (0.3, 0.7)},     # fragment 0: neutral (0.3) + anion (0.7)
-               1: {'charges': (None, 0), 'weights': (0.7, 0.3)}},    # fragment 1: no electrons (0.7) + neutral (0.3)
-    'spin':   [0, 1],                                                # fragments with spin-symmetrized open-shell members
+    'charge': {0: 1.4, 1: 0.6},      # average number of electrons of each fragment
+    'spin':   [0, 1],                # spin-symmetrize the open-shell members of these fragments
+    'config': [0],                   # degenerate configurations of these fragments (filled automatically)
 }
 ```
 
-* **`'charge'`**: for each fragment, the `charges` of the members **relative to the neutral fragment**
-  (`+1` = one electron fewer, `-1` = one more, `0` = neutral; the `fcharge` of the fragment is the neutral reference),
-  their `weights` (total weight of each member, summing to 1) and optionally `spins` (`2S = N_alpha - N_beta` of each
-  member; one entry per member, `None` = default). The default is `fspin` for the neutral (charge 0) member and the lowest
-  spin allowed by the electron count for the others; `spins` overrides `fspin`. A charge of `None` is a member without
-  electrons: zero density, no calculation.
-  ```python
-  {0: {'charges': (0, -1), 'weights': (0.5, 0.5), 'spins': (2, 1)}}    # neutral member 2S = 2 (triplet), anion member 2S = 1
-  ```
-* **`'spin'`**: a fragment (or a list of fragments) whose open-shell members are averaged with their spin-flipped partner
-  (half of the weight each). No extra calculation is needed for the flipped state.
-* **`'config'`** (configuration ensembles): constrained-DFT states of a fragment whose weights `omega` are
-  re-optimized at every iteration.
-  ```python
-  'config': {0: {'charge': 0,
-                 'states': ((('F 2pz', 'beta', 0.0),), (('F 2px', 'beta', 0.0),), (('F 2py', 'beta', 0.0),))}}
-  ```
-  Each state is a tuple of constraints `(orbital label, spin, population)` on the meta-Lowdin localized AOs
-  (population 0 = hole, 1 = fully occupied spin orbital). The label is a regular expression looked up **among the AOs of
-  the fragment's own atoms**, so `'O 2px'` is enough for an O atom fragment of O2; a label that matches several orbitals
-  of the fragment (`'O 2p'`) or only orbitals of other fragments is an error (an AO index, or a label with the atom index
-  such as `'0 O 2px'`, is also accepted). Optionally give `omega=(...)` as a starting guess. A list of such dicts defines several charges
-  per fragment. The result is stored in `mf.omega`; `optimize_omega=False` freezes the weights. This feature is
-  experimental, see [Limitations](#limitations).
+### `'charge'`: fractional numbers of electrons
 
-  **The states must be distinct.** For an atom with a degenerate open shell, constrain as many orbitals as needed to
-  fix the state. The O atom (triplet, 5 alpha and 3 beta electrons, 2p^4: one doubly occupied 2p, two singly occupied) has
-  two beta 2p holes in every state, so each state needs **two** hole constraints (a single beta hole is ambiguous: the
-  SCF picks one of the two remaining orbitals and two states coincide; `f4b` warns when two states of a group converge to
-  the same density). The spin of the states is the spin of the fragment: set it with `fspin` (or `spins` in a charge
-  ensemble), otherwise the lowest spin is used:
-  ```python
-  ens = {'config': {0: {'charge': 0, 'states': (
-             (('O 2py', 'beta', 0.0), ('O 2pz', 'beta', 0.0)),     # 2px doubly occupied
-             (('O 2px', 'beta', 0.0), ('O 2pz', 'beta', 0.0)),     # 2py doubly occupied
-             (('O 2px', 'beta', 0.0), ('O 2py', 'beta', 0.0)))}}}  # 2pz doubly occupied
-  mol = fgto.M(atom='O 0 0 0; O 0 0 2.28', unit='bohr', basis='6-31g', fragments={0: [0], 1: [1]},
-               fspin={0: 2, 1: 2}, ensembles=ens)                  # O triplet: 5 alpha, 3 beta (fragment 1: no ensemble)
-  ```
-  A population-1 constraint (e.g. `('O 2px', 'beta', 1.0)`) also selects the doubly occupied orbital but forces the electron
-  into the localized orbital, which gives a clearly higher state energy (tens of mEh here); holes are preferable.
+Give the **average number of electrons** of each fragment; `f4b` takes the two integers around it and works out the weights.
+`{0: 1.4, 1: 0.6}` for H2 means
 
-Unknown keys and the old tuple-style input raise an error.
+| fragment | electrons | members |
+|---|---|---|
+| 0 | 1.4 | H (weight 0.6) + H- (weight 0.4) |
+| 1 | 0.6 | no electrons (weight 0.4) + H (weight 0.6) |
+
+and `{0: 8.7, 1: 1.3}` for HF gives F+ (0.3) + F (0.7) and H (0.7) + H- (0.3). The numbers must add up to the electrons of the
+molecule. An integer is "no ensemble" for that fragment. A fragment without entry keeps its integer electron number (`Z - fcharge`),
+so `fcharge` is only needed for ion fragments without a charge ensemble (HeH+); if both are given for a fragment, `fcharge` is ignored with a warning.
+Every member gets its ground-state spin (Hund's rule; `fspin` for the neutral member).
+
+*Advanced form*: list the members by hand, `{0: {'charges': (0, -1), 'weights': (0.3, 0.7), 'spins': (None, 1)}}`. `charges` are relative to the
+neutral fragment (`Z - fcharge` electrons; `+1` = one electron fewer, `-1` = one more, `None` = no electrons at all: zero density, no calculation), `weights`
+are the total weights of the members (summing to 1) and `spins` the `2S` of each member (`None` = default); `spins` overrides `fspin`. It allows non-adjacent members.
+
+### `'spin'`: spin-symmetrized fragments
+
+A fragment (or a list of fragments) whose open-shell members are averaged with their spin-flipped partner (half of the weight each).
+No extra calculation is needed for the flipped state. Typical for H atoms in H2, H3+, LiH, HeH+, HF, ...
+
+### `'config'`: degenerate configurations, built automatically
+
+A fragment whose last electrons occupy a *partly filled group of degenerate orbitals* (the 2p shell of F, the pi* pair of CO-, ...) has several degenerate
+determinants, which are averaged in the ensemble with weights `omega` that are **optimized during the P-DFT loop**. `'config': [0]` asks for them
+for fragment 0; `f4b` does the rest for **every member** of the fragment (every electron number of its charge ensemble) that needs it:
+
+1. it finds the shells of the member from a symmetric calculation of the isolated fragment (see [Spin and shells](#spin-and-shells-hunds-rule));
+2. it fills them with the member's spin (`fspin`/`spins` or Hund's rule) and lists the ways of placing the electrons of the partly filled group:
+   `C(d, n)` states for `n` electrons of one spin in `d` degenerate orbitals;
+3. it selects each state with a constrained-DFT population constraint on **holes** (population 0 in the empty orbitals, default) or on the **occupied**
+   orbitals, with the shell orbitals oriented along the Cartesian axes (atoms) or the molecular axis (linear molecules);
+4. it starts with equal weights.
+
+Members without a partly filled degenerate shell (closed shells, half-filled shells, non-degenerate holes) are left unchanged; if none of the members of a requested fragment needs the ensemble, `f4b` warns.
+
+```python
+mol = fgto.M(atom='F 0 0 0; H 0 0 1.733', unit='bohr', basis='cc-pvdz', fragments={0: [0], 1: [1]},
+             ensembles={'charge': {0: 8.7, 1: 1.3},      # F+ (triplet) + F (doublet): both have a partly filled 2p shell
+                        'config': [0],                    # -> 3 + 3 configuration states, found automatically
+                        'spin': [0, 1]})
+print(mol)                                                # members, weights, configuration states
+```
+
+| how many states (Hund spin) | |
+|---|---|
+| F (2p5, doublet) / O- | 3 (one beta hole in px, py or pz) |
+| F+ / O (2p4, triplet): two beta holes; C (2p2, triplet): one alpha hole | 3 |
+| O+ (2p3), Ne, closed shells | none (unique) |
+| CO-, O2+ (pi* with one alpha electron), O2- (one beta electron), benzene cation (e1g) | 2 |
+| CO, O2 (triplet), CO+, H2O, O3 | none |
+
+Forms of `'config'`:
+
+```python
+'config': [0, 1]                                  # fragments 0 and 1
+'config': 'all'                                   # every fragment (those without degenerate shell are ignored)
+'config': {0: {'fill': 'occupied'}}               # population-1 constraints on the occupied orbitals instead of holes
+'config': {0: {'members': [9]}}                   # only the member with 9 electrons gets the ensemble
+'config': {0: {'omega': (0.5, 0.3, 0.2)}}         # initial weights (equal by default); sequence of the right length ...
+'config': {0: {'omega': {9: (0.5, 0.3, 0.2)}}}    # ... or {number of electrons: weights}
+```
+
+Holes are recommended: constraining the occupied orbitals gave states tens of mEh higher in tests (the electron is forced into the constrained localized orbital).
+The weights are stored in `mf.omega[(fragment, charge)]` (`charge` relative to the neutral fragment); `optimize_omega=False` freezes them.
+
+#### Spin and shells (Hund's rule)
+
+For a fragment with `N` electrons, `f4b` runs a small calculation of the isolated fragment (no ghost atoms, LDA, spin-restricted) with **fractional
+occupations**: `N/2` electrons per spin, shared equally by groups of degenerate orbitals. The density is then spherical (atoms) or cylindrical/symmetric,
+and the degenerate orbitals are exactly degenerate (energies equal within 5e-5 Eh). The orbitals are filled in order of energy; the last, partly
+filled group (`d` orbitals, `k` electrons) gets its electrons parallel first, so `N_alpha - N_beta = min(k, 2d - k)` (Hund's rule). It costs a fraction of a second for
+small fragments (a few seconds for benzene) and is done once per fragment and electron number.
+
+```python
+print(mol.shells(0))        # shells of fragment 0 (neutral): degeneracy, energy, electrons, main AO components, Hund spin
+print(mol.shells(0, 8))     # ... of the member with 8 electrons
+```
+
+This works for atoms, linear molecules and symmetric molecules (the benzene cation gives the two orientations of its e1g hole). Molecules without
+degenerate orbitals (H2O, O3, ...) have non-degenerate shells: closed shells for an even number of electrons, doublets for an odd one, and no configuration ensemble. Limits:
+the shells are those of the isolated, symmetric fragment; the aufbau order is the LDA one (transition metals, with close 3d/4s orbitals, were not tested: use `fspin`); if the spin is forced
+so that both spin channels are partly filled (a singlet O atom) the states are the products (3 x 3 = 9), up to a limit of 60 states.
+
+#### States by hand
+
+The automatic ensembles use population constraints on orbitals; they can also be given explicitly (any fragment, any orbital), per charge of the fragment:
+
+```python
+f_ion = tuple(tuple((f'F 2p{k}', 'beta', 0.0) for k in pair) for pair in ('yz', 'xz', 'xy'))   # F+: two beta holes per state
+f_neutral = tuple(((f'F 2p{k}', 'beta', 0.0),) for k in 'xyz')                                   # F : one beta hole per state
+'config': {0: [{'charge': 1, 'states': f_ion},                                # a list of dicts: one per charge of the fragment
+               {'charge': 0, 'states': f_neutral, 'omega': (0.2, 0.3, 0.5)}]}
+```
+
+Each state is a tuple of constraints `(orbital, spin, population)` (population 0 = hole, 1 = full spin orbital). The orbital is a localized (meta-Lowdin) AO given by a regular expression
+that is looked up **among the AOs of the fragment's own atoms** (`'O 2px'` is enough for an O atom of O2; a label matching several orbitals of the fragment, or only orbitals
+of other fragments, is an error; use the atom index, `'1 O 2px'`, when the fragment has several atoms of one element), an AO index, or a combination `{'C 2py': 1, '2 O 2py': -1}`
+(normalized automatically). The `charge` is relative to the neutral fragment, like in the advanced charge form. A manual and an automatic configuration ensemble cannot be mixed for one fragment.
+The states must be distinct (`f4b` warns when two states of a group converge to the same density).
+
+Unknown keys raise an error.
 
 ## Methods and the `pdft.RKS` object
 
@@ -305,15 +370,16 @@ Set options as keywords: `pdft.RKS(mol, method=..., name=value)`. Unknown names 
 
 ## Examples
 
+The folder `examples/` has a notebook for each of the cases below (H2, H2 with fractional electrons, H2+, H3+, H6 chain, HeH+, LiH, HF, CO2) and
+two about the tools (`Shells_and_Hund_example`, `Restart_example`).
+
 ### Fragments with fractional charge: LiH
 
 ```python
 from f4b import pdft, fgto
-ens = {'charge': {0: {'charges': (0, -1), 'weights': (0.56826, 0.43174)},    # Li and Li-
-                  1: {'charges': (1, 0),  'weights': (0.43174, 0.56826)}},   # H+ and H
-       'spin': [0, 1]}
-mol = fgto.M(atom='Li 0 0 0; H 0 0 3.014', unit='bohr', basis='cc-pvdz',
-             fragments={0: [0], 1: [1]}, ensembles=ens)
+mol = fgto.M(atom='Li 0 0 0; H 0 0 3.014', unit='bohr', basis='cc-pvdz', fragments={0: [0], 1: [1]},
+             ensembles={'charge': {0: 3.43174, 1: 0.56826},    # electrons of each fragment: Li + Li-, no electrons + H
+                         'spin': [0, 1]})
 mf = pdft.RKS(mol, method='inversion', inv_reg=1e-3, maxiter=40)
 mf.kernel()
 ```
@@ -321,10 +387,33 @@ mf.kernel()
 ### H2 with fractional electrons only (no spin ensemble)
 
 ```python
-ens = {'charge': {0: {'charges': (0, -1),   'weights': (0.3, 0.7)},     # 1.7 electrons
-                  1: {'charges': (None, 0), 'weights': (0.7, 0.3)}}}    # 0.3 electrons
+mol = fgto.M(atom='H 0 0 0; H 0 0 0.74', basis='cc-pvdz', fragments={0: [0], 1: [1]},
+             ensembles={'charge': {0: 1.7, 1: 0.3}})           # H + H- (0.3 / 0.7) and no electrons + H (0.7 / 0.3)
 ```
 The same call works with or without `'spin': [0, 1]`.
+
+### HF: charge transfer and degenerate configurations of F
+
+```python
+mol = fgto.M(atom='F 0 0 0; H 0 0 1.733', unit='bohr', basis='cc-pvdz', fragments={0: [0], 1: [1]},
+             ensembles={'charge': {0: 9.2, 1: 0.8},   # F (0.8) + F- (0.2); H (0.8) + H+ (0.2)
+                        'config': [0],                 # the three 2p-hole configurations of F, built and weighted automatically
+                        'spin': [0, 1]})
+mf = pdft.RKS(mol, method='reference', ref_dm=ks.make_rdm1())    # ks: a plain KS calculation of the molecule
+mf.kernel()
+print(mf.omega)                                                    # optimized configuration weights
+```
+With `{0: 8.8, 1: 1.2}` the fragment F is F+ (triplet, two beta holes) + F: both members get their configurations.
+
+### CO2 as CO + O
+
+```python
+mol = fgto.M(atom='O 0 0 -2.2; C 0 0 0; O 0 0 2.2', unit='bohr', basis='6-31g', fragments={0: [1, 2], 1: [0]},
+             ensembles={'charge': {0: 13.75, 1: 8.25},   # e.g. Mulliken populations of a KS calculation
+                        'config': [1],                    # O (8 e) and O- (9 e): partly filled 2p
+                        'spin': [0, 1]})
+```
+CO- (the extra electron in the degenerate pi* pair) would get the two configurations pi*_x and pi*_y automatically.
 
 ### Reference density from another method
 
@@ -345,9 +434,8 @@ mode: fragments are solved with UHF, `dVp = dTs_vW/dn + v_ext` and `E = Ts_vW + 
 self-interaction error of PBE (6.7 mEh for H2+ at 2 bohr).
 
 ```python
-ens = {'charge': {i: {'charges': (0, None), 'weights': (0.5, 0.5)} for i in (0, 1)}}
 mol = fgto.M(atom=[['H', (-1, 0, 0)], ['H', (1, 0, 0)]], unit='bohr', basis='cc-pvqz', charge=1, spin=1,
-             fragments={0: [0], 1: [1]}, ensembles=ens)
+             fragments={0: [0], 1: [1]}, ensembles={'charge': {0: 0.5, 1: 0.5}})     # half an electron on each H
 pdft.RKS(mol, method='functional-T', accel='diis').kernel()      # agrees with UHF (exact) to ~5e-6 Eh
 ```
 
@@ -363,8 +451,8 @@ HeH+ has two electrons, so it uses the regular machinery:
 sep = 1.458869
 mol = fgto.M(atom=[['He', (-sep/2, 0, 0)], ['H', (sep/2, 0, 0)]], unit='bohr', basis='cc-pvqz',
              charge=1, spin=0, fragments={0: [0], 1: [1]},
-             fcharge={0: 1},                    # fragment 0 is He+
-             ensembles={'spin': [0, 1]})        # both fragments are doublets
+             fcharge={0: 1},                    # fragment 0 is He+ (no charge ensemble: fcharge sets its electrons)
+             ensembles={'spin': [0, 1]})        # both fragments are doublets (Hund's rule)
 ```
 
 ### Symmetry-equivalent fragments
@@ -541,13 +629,16 @@ Notes on `Vp`:
   experimental with `inversion`: the weight optimization is non-convex and may jump between configurations. A good start
   is `Vp0=` from a `reference` run (see [Saving and resuming](#saving-and-resuming-a-calculation)).
 * In the one-electron mode `inversion` and `reference` converge slowly; configuration ensembles are not supported.
+* Automatic configuration ensembles need *exactly degenerate* shells in the symmetric isolated fragment (atoms, linear and symmetric molecules);
+  other situations (or other choices of states) are given by hand. A fragment whose spin is forced so that both spin channels are partly filled produces product states (limit 60).
+* The default spin of v0.1.0 was the lowest one (singlet/doublet); it is now the Hund-rule ground state (a triplet O atom, a quartet N atom, ...). Use `fspin` to get the old behavior.
 * Not implemented: local-Q non-additive terms, post-P-DFT corrections, the direct method, spin-resolved `reference`,
   fragment basis different from the system basis, `frag_symm` with configuration ensembles.
 
 ## Testing
 
 ```bash
-python -m pytest tests -m "not slow"      # H2, H2+, H3+, symmetry, configuration ensembles (about 5 minutes)
+python -m pytest tests -m "not slow"      # H2, H2+, H3+, symmetry, spins, automatic ensembles, configuration ensembles (about 5 minutes)
 python -m pytest tests                    # adds the slow LiH test
 ```
 

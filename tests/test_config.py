@@ -150,3 +150,51 @@ def test_same_density_states_trigger_a_warning():
     mol = o2(tuple(((f"O 2p{k}", "beta", 0.0),) for k in "xyz"))
     with pytest.warns(UserWarning, match="same density"):
         FragmentSystem(mol, grid_level=3).solve(np.zeros((mol.mol.nao,) * 2))
+
+
+def test_configuration_ensembles_for_two_charges_of_one_fragment():
+    """HF with F between F+ (2p^4: two beta holes) and F (2p^5: one beta hole), each with its own configuration group."""
+    nhy = 0.8
+    one = tuple(((f"F 2p{k}", "beta", 0.0),) for k in "xyz")
+    two = tuple(((f"F 2p{a}", "beta", 0.0), (f"F 2p{b}", "beta", 0.0)) for a, b in (("y", "z"), ("x", "z"), ("x", "y")))
+    ens = {"charge": {0: {"charges": (1, 0), "weights": (1 - nhy, nhy), "spins": (2, 1)},
+                      1: {"charges": (-1, 0), "weights": (1 - nhy, nhy), "spins": (0, 1)}},
+           "config": {0: [{"charge": 1, "states": two}, {"charge": 0, "states": one}]}}
+    mol = fgto.M(atom="F 0 0 0; H 0 0 1.7328", unit="bohr", basis="sto-3g", fragments={0: [0], 1: [1]}, ensembles=ens)
+    ms = mol.frags[0].members
+    assert [(m.na, m.nb, m.charge) for m in ms] == [(5, 3, 1)] * 3 + [(5, 4, 0)] * 3
+    assert sum(m.total_weight for m in ms if m.charge == 1) == pytest.approx(1 - nhy)
+    assert sum(m.total_weight for m in ms if m.charge == 0) == pytest.approx(nhy)
+    assert mol.frags[0].nelec_avg == pytest.approx(9 - (1 - nhy))
+    mf = pdft.RKS(mol, method="functional-T", verbose=0, grid_level=3).build()
+    assert set(mf._cfg_groups) == {(0, 1), (0, 0)}                      # one optimized weight group per charge
+
+
+# ---- constraints on combinations of AOs (manual states of fragments with several atoms)
+def co2_manual():
+    pi_y = {"C 2py": 1.0, "2 O 2py": -1.0}
+    pi_x = {"C 2px": 1.0, "2 O 2px": -1.0}
+    ens = {"charge": {0: {"charges": (0, -1), "weights": (0.5, 0.5), "spins": (0, 1)},
+                      1: {"charges": (0, 1), "weights": (0.5, 0.5), "spins": (2, 3)}},
+           "config": {0: {"charge": -1, "states": (((pi_y, "alpha", 0.0),), ((pi_x, "alpha", 0.0),))}}}
+    return fgto.M(atom="O 0 0 -2.2; C 0 0 0; O 0 0 2.2", unit="bohr", basis="sto-3g", fragments={0: [1, 2], 1: [0]},
+                  ensembles=ens)
+
+
+def test_combination_orbital_is_normalized_and_resolved_in_the_fragment():
+    mol = co2_manual()
+    cs = [m.config.constraints[0] for m in mol.frags[0].members if m.config is not None]
+    S = mol.mol.intor("int1e_ovlp")
+    for c in cs:
+        assert c.P is not None and c.index is None                    # a combination, not a single AO
+    assert abs(np.trace(cs[0].P @ np.linalg.inv(S) @ cs[1].P @ np.linalg.inv(S))) < 1e-10     # pi_y and pi_x are orthogonal
+    assert np.trace(cs[0].P @ np.linalg.inv(S)) == pytest.approx(1.0)                          # unit-norm orbital
+
+
+def test_atom_index_in_label_is_anchored():
+    """'1 H 1s' must not match '11 H 1s'."""
+    from f4b.cdft import Constraint
+    mol = fgto.M(atom="; ".join(f"H 0 0 {1.5 * i}" for i in range(12)), basis="sto-3g", unit="bohr", charge=0, spin=0,
+                 fragments={i: [i] for i in range(12)})
+    c = Constraint("1 H 1s", "alpha", 0.0).bind(mol.mol, mol.mol.intor("int1e_ovlp"), np.eye(mol.mol.nao))
+    assert c.index == 1

@@ -129,7 +129,12 @@ class FragmentSystem:
                 mf._dm_prev = mf.make_rdm1()
                 return mf._dm_prev
             mf.vpart = None
-            st.vc = solve_multipliers(st, run)
+            tol, tol_grad = mf.conv_tol, mf.conv_tol_grad
+            mf.conv_tol, mf.conv_tol_grad = max(tol, 1e-8), 1e-4       # the multipliers do not need the production precision;
+            try:                                                       # the constrained SCF of hole states creeps along a soft mode
+                st.vc = solve_multipliers(st, run)
+            finally:
+                mf.conv_tol, mf.conv_tol_grad = tol, tol_grad
             mf._dm_prev = None
         mf.vc_term = st.fock_add()
 
